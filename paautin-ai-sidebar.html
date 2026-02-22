@@ -88,9 +88,20 @@
         return { tabId: tabId, tabLabel: tab ? tab.label : tabId, nodeCount: nodes.length, nodes: nodes };
     }
 
+    // ── Logo (base64 embedded) ─────────────────────────────────
+    var HAINTECH_LOGO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMkAAADICAYAAABCmsWgAAAKnmlDQ1BJQ0MgUHJvZmlsZQAASImVlgdQk9kWgO///+mFlhCKlNCbIJ0AUkIPoCAdbIQkQCghBoKKXVlcAUURkaYs6KqAgqtSZK1YsLAoFuxukEVBXRcLomJ5PzAEd9+89+admfOfb85/7rnn3rln5gBAxXDF4jRYCYB0UZYkzN+LGRMbx8QPAQRAgALMAIHLyxSzQ0ODASpT9u/yvheNReWm5Xiuf///X0WZL8jkAQCFopzAz+Slo3wM1cc8sSQLAKQE9RsszRKPcxvKdAlaIMpd45w0ybJxTpjkdxMxEWFeAGAIABAoXK4kCQAKHfUzs3lJaB6KPcrWIr5QhDIfZff09AzUUvaibIrGiFEez89K+C5P0t9yJshzcrlJcp48y4QQfISZ4jTu8v/zOv63pKdJp/YwRpWSLAkIQy0OvbO7qRlBchYlzA2ZYiF/In6Ck6UBkVPMy/TOm2I+1ydIvjZtbvAUJwr9OPI8WZyIKRZk+oZPsSQjTL5XosSbPcVcyfS+0tRIeL87yku8lTguVxwvS/OX+zOxw+dos9EFOrw2V32EKNzB0ioEfCAA+AGQJlmWNF++dIV4uESYlZzHZaFcJmBwRz2om09ba1gGA8R6dfAJvGRO9BzGuTPsyXNCnewnthR3TvoRBAFrvAaBBnvYZon2muBiAls08qSR70ocZ/2ABCSgCOtAAOsAAmAJLYAscgSvwBL4gEISACBALFgEeSAbpQAKWgpVgHcgDBWAr2AEqQDXYAw6AQ+AIaAUnwFlwEVwF18Ft8ADIwAB4AYbBezAGQRAeokI0SAPShYwgC8gWYkHukC8UDIVBsVA8lASJICm0EtoAFUDFUAVUA9VBv0DHobPQZagHugf1QUPQG+gTjMAUmA5rw8bwLJgFs+EgOAJeCCfBS+AcOBfeApfBtfBBuAU+C1+Fb8My+AU8ggCEjDAQPcQSYSHeSAgShyQiEmQ1ko+UIrVII9KOdCI3ERnyEvmIwWFoGCbGEuOKCcBEYniYJZjVmEJMBeYApgVzHnMT04cZxnzFUrFaWAusC5aDjcEmYZdi87Cl2H3YZuwF7G3sAPY9Dodj4ExwTrgAXCwuBbcCV4jbhWvCncH14PpxI3g8XgNvgXfDh+C5+Cx8Hr4cfxB/Gn8DP4D/QCATdAm2BD9CHEFEWE8oJdQTThFuEJ4RxohKRCOiCzGEyCcuJxYR9xLbideIA8QxkjLJhORGiiClkNaRykiNpAukh6S3ZDJZn+xMnkcWkteSy8iHyZfIfeSPFBWKOcWbsoAipWyh7KecodyjvKVSqcZUT2ocNYu6hVpHPUd9TP2gQFOwUuAo8BXWKFQqtCjcUHilSFQ0UmQrLlLMUSxVPKp4TfGlElHJWMlbiau0WqlS6bjSHaURZZqyjXKIcrpyoXK98mXlQRW8irGKrwpfJVdlj8o5lX4aQjOgedN4tA20vbQLtAE6jm5C59BT6AX0Q/Ru+rCqiqq9apTqMtVK1ZOqMgbCMGZwGGmMIsYRRi/jk5q2GltNoLZJrVHthtqo+gx1T3WBer56k/pt9U8aTA1fjVSNbRqtGo80MZrmmvM0l2ru1ryg+XIGfYbrDN6M/BlHZtzXgrXMtcK0Vmjt0erSGtHW0fbXFmuXa5/TfqnD0PHUSdEp0TmlM6RL03XXFeqW6J7Wfc5UZbKZacwy5nnmsJ6WXoCeVK9Gr1tvTN9EP1J/vX6T/iMDkgHLINGgxKDDYNhQ13CO4UrDBsP7RkQjllGy0U6jTqNRYxPjaOONxq3GgybqJhyTHJMGk4emVFMP0yWmtaa3zHBmLLNUs11m581hcyRZA1Kgmb58Vu3snStSRcv17a9mbFu8GzNJJQkG2eC3Hr0pG6qra+7e/Ob4JLo//PaGpe9jvM2epDOKJOQmx6lFOf3R5L5jFpdkb0dqbPRQ6vBL3R6yFd7L9Do5imSdMPV5TfB7iiMY82kK7Ln4yLJOQuvz+pu9CANypqJlOD8/kgyn1HjK8o2wW48UM0ObK5dE1TLy5CkJbiqblX7+1b1a3uOmx7bkqvXD0nqcap9VfaBvWyn+NqDtLiQmx5bQKvZBUlqgqp7WddrI2V58KfgMjLydiSRM5waoe1GD1ODtDhgzaQFtJpdkKQmqDqXZZtgSzZ6qBOj6ho2iqii0/4ckrRnN9Oz7ibYMx09NbBRhCeQuWGQJAdEcqi1NlKW42jNhBX4Mjyt25GkNbrpjk03wZ7u7e+IzbX9sRyPhCRjEsKfvjZ6EKbhWDOREpztjySzTBq3jL5bcVD9/z9sPKigA2smAngFXZGkAErTphCLh1U5ctNjFZ3m54J+6ap5unH2+PmLz1z27Ece/SSAJB7qurSw4LL/ePSTAG+3+llXZuWRAJJ4hMlQ/SSAJP2sK7PySABJPMJkqH4SQJJ+1pVZeSSAJB5hMlQ/CSBJP+vKrDwSQBKPMBmqnwSQpJ91ZVYeCSCJR5gM1U8CSNLPujIrjwSQxCNMhuonASTpZ12ZlUcCSOIRJkP1kwCS9LOuzMojASTxCJOh+kkASfpZV2blkQCSeITJUP0kgCT9rCuz8kgASTzCZKh+EkhiI4if/vy7n9VjVioE+E2igpkglgkgieXqkbsKASRRwUwQywSQxHL1yF2FAJKoYCaIZQJIYrl65K5CAElUMBPEMgEksVw9clchgCQqmAlimQCSWK4euasQQBIVzASxTABJLFeP3FUIIIkKZoJYJoAklqtH7ioEkEQFM0EsE0ASy9UjdxUCSKKCmSCWCSCJ5eqRuwoBJFHBTBDLBJDEcvXIXYUAkqhgJohlAkhiuXrkrkIASVQwE8QyASSxXD1yVyEQdHO65Y+vuJXr11QmShCbBJYXg75ER9AuDQaD9zbxkTUEdAjwdkuHM1EME0ASw8UjdR0CSKLDmSiGCSCJ4eKRug4BJNHhTBTDBJDEcPFIXYcAkuhwJophAkhiuHikrkMASXQ4E8UwASQxXDxS1yGAJDqciWKYAJIYLh6p6xBAEh3ORDFMAEkMF4/UdQggiQ5nohgmEPQbLavbu2716a5hfKTeNYHfvvvS/XDjetdhKscPKsne23du6/i4MkFOpk1g791pcAC83QpeAhKInQCSxF4h8gtOAEmCl4AEYieAJLFXiPyCE0CS4CUggdgJIEnsFSK/4ASQJHgJSCB2AkgSe4XILzgBJAleAhKInQCSxF4h8gtOAEmCl4AEYieAJLFXiPyCE0CS4CUggdgJIEnsFSK/4ASQJHgJSCB2AkgSe4XILzgBJAleAhKInQCSxF4h8gtOAEmCl4AEYieAJLFXiPyCE0CS4CUggdgJIEnsFSK/4ASQJHgJSCB2AkH33dKCs3z1qlaoZOLsnZy44Wn4PbE0gCchyd2bX7mVpWsaPJOJsbYzdLcePUlivrzdSqLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBAEkSaLMTFJCAEkk9OibBIFLg8HgfaiZbh0du8dHJ52H//7TRbe0sNB5nJQCpFS7oJKk9KJirnYJ8HbLbu3IXIkAkiiBJoxdAkhit3ZkrkQASZRAE8YuASSxWzsyVyKAJEqgCWOXAJLYrR2ZKxFAEiXQhLFLAEns1o7MlQggiRJowtglgCR2a0fmSgSQRAk0YewSQBK7tSNzJQJIogSaMHYJIInd2pG5EoH/AO6QvT8mlpv7AAAAAElFTkSuQmCC";
+
     // ── UI Construction ──────────────────────────────────────────
     function buildUI() {
         var $content = $("<div>", { class: "pai-container" });
+
+        // ─ Header with logo ─
+        var $header = $("<div>", { class: "pai-header" });
+        $header.html(
+            '<img src="' + HAINTECH_LOGO + '" class="pai-logo" alt="HainTech">' +
+            '<span class="pai-header-title">Paautin AI</span>' +
+            '<span class="pai-header-by">by HainTech</span>'
+        );
 
         // ─ Toolbar ─
         var $toolbar = $("<div>", { class: "pai-toolbar" });
@@ -146,10 +157,7 @@
         // ─ Messages area ─
         $messages = $("<div>", { class: "pai-messages" });
         addMessageToUI("assistant",
-            "Hola! Soy el asistente AI para Node-RED.\n\n" +
-            "**Modos disponibles:**\n" +
-            "- **API Directa**: usa tu API Key de Anthropic (configura en el engranaje)\n" +
-            "- **Claude Code**: conecta a tu `claude` CLI local (requiere companion server)\n\n" +
+            "Hola! Soy el asistente AI de **HainTech** para Node-RED.\n" +
             "Selecciona un modo arriba y escribe tu pregunta."
         );
 
@@ -161,7 +169,7 @@
         $inputArea.append($textarea).append($sendBtn).append($stopBtn);
 
         // Assemble
-        $content.append($toolbar).append($settingsPanel).append($messages).append($inputArea);
+        $content.append($header).append($toolbar).append($settingsPanel).append($messages).append($inputArea);
 
         // ─ Events ─
         $sendBtn.on("click", sendMessage);
@@ -408,8 +416,8 @@
 
             RED.sidebar.addTab({
                 id: "paautin-ai",
-                label: "AI",
-                name: "Paautin AI Assistant",
+                label: "hAIntech",
+                name: "hAIntech - Paautin AI Assistant",
                 iconClass: "fa fa-comments",
                 content: ui.content[0],
                 toolbar: ui.toolbar[0],
@@ -428,10 +436,17 @@
 <!-- ── Styles ──────────────────────────────────────────────────── -->
 <style>
 .pai-container {
-    display: flex; flex-direction: column; height: 100%;
+    display: flex; flex-direction: column; height: 100%; max-height: 100%; overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     font-size: 13px; background: #f7f7f7;
 }
+.pai-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; background: #fff; border-bottom: 1px solid #e0e0e0; flex-shrink: 0;
+}
+.pai-logo { width: 28px; height: 28px; }
+.pai-header-title { font-size: 14px; font-weight: 700; color: #333; }
+.pai-header-by { font-size: 10px; color: #999; margin-left: auto; }
 .pai-toolbar {
     display: flex; align-items: center; gap: 6px;
     padding: 6px 8px; background: #eee; border-bottom: 1px solid #ddd; flex-shrink: 0;
@@ -470,7 +485,7 @@
 .pai-settings-save:hover { background: #1976d2; }
 
 /* Messages */
-.pai-messages { flex: 1; overflow-y: auto; padding: 10px 8px; display: flex; flex-direction: column; gap: 8px; }
+.pai-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 8px; display: flex; flex-direction: column; gap: 8px; }
 .pai-msg { display: flex; max-width: 100%; }
 .pai-msg-user { justify-content: flex-end; }
 .pai-msg-assistant, .pai-msg-tool { justify-content: flex-start; }
