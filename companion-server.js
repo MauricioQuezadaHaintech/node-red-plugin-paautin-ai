@@ -109,6 +109,7 @@ function sseWrite(res, type, content) {
 
 // ── Handle /chat ────────────────────────────────────────────────
 async function handleChat(req, res) {
+    console.log("[chat] Request received");
     var body;
     try {
         body = JSON.parse(await readBody(req));
@@ -133,7 +134,7 @@ async function handleChat(req, res) {
             "Context — active Node-RED flow (tab: " +
             (flowContext.tabLabel || flowContext.tabId) +
             ", " + flowContext.nodeCount + " nodes):\n```json\n" +
-            JSON.stringify(flowContext.nodes, null, 2) +
+            JSON.stringify(flowContext.nodes) +
             "\n```\n\n" + prompt;
     }
 
@@ -145,74 +146,122 @@ async function handleChat(req, res) {
         "X-Accel-Buffering": "no",
     });
 
-    // Spawn claude CLI
-    var proc;
-    try {
-        var childEnv = Object.assign({}, process.env);
-        delete childEnv.CLAUDECODE;
-        proc = spawn(claudePath, ["-p", prompt, "--output-format", "stream-json", "--verbose", "--max-turns", "10", "--model", "sonnet", "--no-session-persistence"], {
-            cwd: config.project,
-            env: childEnv,
-        });
-    } catch (err) {
-        sseWrite(res, "error", "Failed to start claude CLI: " + err.message);
-        res.write("data: [DONE]\n\n");
-        res.end();
-        return;
+    // Write prompt to temp file (avoids shell escaping issues)
+    var ts = Date.now();
+    var tmpPrompt = path.join(os.tmpdir(), "claude-prompt-" + ts + ".txt");
+    var tmpOut = path.join(os.tmpdir(), "claude-out-" + ts + ".jsonl");
+    fs.writeFileSync(tmpPrompt, prompt);
+
+    // Build minimal clean env
+    var childEnv = {
+        HOME: os.homedir(),
+        PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
+        USER: process.env.USER || "",
+        LANG: process.env.LANG || "en_US.UTF-8",
+        TERM: "xterm-256color",
+    };
+
+    // Spawn claude via bash with file redirect — the binary doesn't produce
+    // output when stdout is a Node.js pipe, but works with file redirection
+    var cmd = "'" + claudePath + "'" +
+        " -p \"$(cat '" + tmpPrompt + "')\"" +
+        " --output-format stream-json --verbose" +
+        " --max-turns 10 --model sonnet --no-session-persistence" +
+        " > '" + tmpOut + "' 2>&1";
+    console.log("[chat] Output file:", tmpOut);
+
+    var proc = spawn("/bin/bash", ["-c", cmd], {
+        cwd: config.project,
+        env: childEnv,
+        stdio: "ignore",
+        detached: true,
+    });
+    var procPid = proc.pid;
+    proc.unref();
+    console.log("[chat] Spawned PID:", procPid);
+
+    // Poll the output file for new lines
+    var closed = false;
+    var bytesRead = 0;
+    var lineBuffer = "";
+
+    req.on("close", function () {
+        closed = true;
+        // Kill the detached process group
+        try { process.kill(-procPid, "SIGTERM"); } catch (_e) {}
+        cleanup();
+    });
+
+    function cleanup() {
+        try { fs.unlinkSync(tmpPrompt); } catch (_e) {}
+        try { fs.unlinkSync(tmpOut); } catch (_e) {}
     }
 
-    var buffer = "";
-
-    proc.stdout.on("data", function (data) {
-        buffer += data.toString();
-        var lines = buffer.split("\n");
-        buffer = lines.pop(); // keep incomplete line in buffer
-
-        lines.forEach(function (line) {
-            if (!line.trim()) return;
-            try {
-                var evt = JSON.parse(line);
-
-                if (evt.type === "assistant" && evt.message && Array.isArray(evt.message.content)) {
-                    evt.message.content.forEach(function (block) {
-                        if (block.type === "text") {
-                            sseWrite(res, "text", block.text);
-                        } else if (block.type === "tool_use") {
-                            sseWrite(res, "tool_use", { tool: block.name, input: block.input });
-                        }
-                    });
-                } else if (evt.type === "result") {
-                    if (evt.result) {
-                        sseWrite(res, "result", evt.result);
+    function processLine(line) {
+        if (!line.trim()) return;
+        try {
+            var evt = JSON.parse(line);
+            if (evt.type === "assistant" && evt.message && Array.isArray(evt.message.content)) {
+                evt.message.content.forEach(function (block) {
+                    if (block.type === "text") {
+                        sseWrite(res, "text", block.text);
+                    } else if (block.type === "tool_use") {
+                        sseWrite(res, "tool_use", { tool: block.name, input: block.input });
                     }
-                    if (evt.cost_usd !== undefined) {
-                        sseWrite(res, "cost", evt.cost_usd);
-                    }
-                }
-            } catch (_e) { /* skip non-JSON lines */ }
-        });
-    });
+                });
+            } else if (evt.type === "result") {
+                if (evt.result) sseWrite(res, "result", evt.result);
+                if (evt.total_cost_usd !== undefined) sseWrite(res, "cost", evt.total_cost_usd);
+            }
+        } catch (_e) { /* skip non-JSON lines */ }
+    }
 
-    proc.stderr.on("data", function (data) {
-        var msg = data.toString().trim();
-        if (msg) console.error("[claude stderr]", msg);
-    });
+    function pollFile() {
+        if (closed) return;
 
-    proc.on("close", function () {
-        res.write("data: [DONE]\n\n");
-        res.end();
-    });
+        var fileSize = 0;
+        try {
+            var stat = fs.statSync(tmpOut);
+            fileSize = stat.size;
+        } catch (_e) {
+            // File doesn't exist yet — keep polling
+            setTimeout(pollFile, 200);
+            return;
+        }
 
-    proc.on("error", function (err) {
-        sseWrite(res, "error", "claude CLI error: " + err.message);
-        res.write("data: [DONE]\n\n");
-        res.end();
-    });
+        if (fileSize > bytesRead) {
+            var fd = fs.openSync(tmpOut, "r");
+            var buf = Buffer.alloc(fileSize - bytesRead);
+            fs.readSync(fd, buf, 0, buf.length, bytesRead);
+            fs.closeSync(fd);
+            bytesRead = fileSize;
 
-    // Kill process if client disconnects
-    req.on("close", function () {
-        if (proc && !proc.killed) proc.kill("SIGTERM");
-    });
+            lineBuffer += buf.toString();
+            var lines = lineBuffer.split("\n");
+            lineBuffer = lines.pop(); // keep incomplete last line
+
+            lines.forEach(processLine);
+        }
+
+        // Check if process is still alive
+        var alive = false;
+        try { process.kill(procPid, 0); alive = true; } catch (_e) {}
+
+        if (!alive && fileSize <= bytesRead) {
+            // Process ended and we've read all output
+            if (lineBuffer.trim()) processLine(lineBuffer);
+            console.log("[chat] Process finished, total bytes:", bytesRead);
+            res.write("data: [DONE]\n\n");
+            res.end();
+            cleanup();
+            return;
+        }
+
+        setTimeout(pollFile, 150);
+    }
+
+    // Start polling after a short delay
+    setTimeout(pollFile, 300);
 }
 
 // ── HTTP Server ─────────────────────────────────────────────────
