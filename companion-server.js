@@ -10,8 +10,10 @@
  *   node companion-server.js [--port 3100] [--project /path/to/project]
  */
 const http = require("http");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 const path = require("path");
+const fs = require("fs");
+const os = require("os");
 
 // ── Parse CLI args ──────────────────────────────────────────────
 function parseArgs(argv) {
@@ -36,6 +38,51 @@ function parseArgs(argv) {
 }
 
 const config = parseArgs(process.argv);
+
+// ── Find claude CLI binary ─────────────────────────────────────
+function findClaude() {
+    // 1. Check if 'claude' is in PATH
+    try {
+        var p = execSync("which claude", { encoding: "utf8" }).trim();
+        if (p && fs.existsSync(p)) return p;
+    } catch (_e) {}
+
+    // 2. Check VS Code extension (common location)
+    var home = os.homedir();
+    var vscodeDirs = [
+        path.join(home, ".vscode", "extensions"),
+        path.join(home, ".vscode-insiders", "extensions"),
+    ];
+    for (var dir of vscodeDirs) {
+        try {
+            var exts = fs.readdirSync(dir).filter(function (d) {
+                return d.startsWith("anthropic.claude-code-");
+            }).sort().reverse(); // newest first
+            for (var ext of exts) {
+                var bin = path.join(dir, ext, "resources", "native-binary", "claude");
+                if (fs.existsSync(bin)) return bin;
+            }
+        } catch (_e) {}
+    }
+
+    // 3. Common install paths
+    var paths = [
+        path.join(home, ".claude", "local", "bin", "claude"),
+        "/usr/local/bin/claude",
+        "/opt/homebrew/bin/claude",
+    ];
+    for (var p of paths) {
+        if (fs.existsSync(p)) return p;
+    }
+
+    return null;
+}
+
+var claudePath = findClaude();
+if (!claudePath) {
+    console.error("ERROR: claude CLI not found. Install it or add it to PATH.");
+    process.exit(1);
+}
 
 // ── CORS headers ────────────────────────────────────────────────
 function setCORS(res) {
@@ -101,9 +148,11 @@ async function handleChat(req, res) {
     // Spawn claude CLI
     var proc;
     try {
-        proc = spawn("claude", ["-p", prompt, "--output-format", "stream-json", "--max-turns", "10"], {
+        var childEnv = Object.assign({}, process.env);
+        delete childEnv.CLAUDECODE;
+        proc = spawn(claudePath, ["-p", prompt, "--output-format", "stream-json", "--max-turns", "10", "--model", "sonnet", "--no-session-persistence"], {
             cwd: config.project,
-            env: Object.assign({}, process.env),
+            env: childEnv,
         });
     } catch (err) {
         sseWrite(res, "error", "Failed to start claude CLI: " + err.message);
@@ -200,6 +249,7 @@ server.listen(config.port, function () {
     console.log("  ──────────────────────────");
     console.log("  Port:    " + config.port);
     console.log("  Project: " + config.project);
+    console.log("  Claude:  " + claudePath);
     console.log("  URL:     http://localhost:" + config.port);
     console.log("");
     console.log("  Waiting for requests from Node-RED sidebar...");
