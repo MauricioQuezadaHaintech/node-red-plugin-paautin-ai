@@ -150,7 +150,7 @@ async function handleChat(req, res) {
     try {
         var childEnv = Object.assign({}, process.env);
         delete childEnv.CLAUDECODE;
-        proc = spawn(claudePath, ["-p", prompt, "--output-format", "stream-json", "--max-turns", "10", "--model", "sonnet", "--no-session-persistence"], {
+        proc = spawn(claudePath, ["-p", prompt, "--output-format", "stream-json", "--verbose", "--max-turns", "10", "--model", "sonnet", "--no-session-persistence"], {
             cwd: config.project,
             env: childEnv,
         });
