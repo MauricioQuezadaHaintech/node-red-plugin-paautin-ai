@@ -126,9 +126,12 @@
         var nodes = [];
         RED.nodes.eachNode(function (n) {
             if (n.z === tabId) {
-                var obj = { id: n.id, type: n.type, name: n.name || "", x: n.x, y: n.y, wires: n.wires };
-                if (n.func) obj.func = n.func;
-                if (n.rules) obj.rules = n.rules;
+                var obj = { id: n.id, type: n.type, name: n.name || "", x: Math.round(n.x), y: Math.round(n.y), wires: n.wires };
+                // Include key properties per node type (compact)
+                if (n.url) obj.url = n.url;
+                if (n.method) obj.method = n.method;
+                if (n.topic) obj.topic = n.topic;
+                if (n.func) obj.func = n.func.length > 200 ? n.func.substring(0, 200) + "..." : n.func;
                 nodes.push(obj);
             }
         });
@@ -425,7 +428,7 @@
         }
         if (flowContext && flowContext.nodes.length > 0) {
             system += "\n\nCurrent nodes on this tab (" + flowContext.nodeCount + " nodes):\n```json\n" +
-                JSON.stringify(flowContext.nodes, null, 2) + "\n```";
+                JSON.stringify(flowContext.nodes) + "\n```";
         }
 
         // Build messages from conversation
@@ -455,6 +458,12 @@
             }).then(function (response) {
                 if (!response.ok) {
                     return response.text().then(function (t) {
+                        if (response.status === 429) {
+                            throw new Error("Rate limit alcanzado. Intenta con un modelo mas liviano (Sonnet/Haiku) o espera un minuto.");
+                        }
+                        if (response.status === 401) {
+                            throw new Error("API Key invalida. Revisa la configuracion.");
+                        }
                         throw new Error("Anthropic API " + response.status + ": " + t);
                     });
                 }
