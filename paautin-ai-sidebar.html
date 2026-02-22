@@ -1,21 +1,57 @@
-<!-- Editor-side: Sidebar chat plugin for Paautin AI -->
+<!-- Editor-side: Sidebar chat plugin for Paautin AI (fully client-side) -->
 
 <script type="text/javascript">
 (function () {
     "use strict";
 
-    // ── State ───────────────────────────────────────────────────
+    // ── Constants ────────────────────────────────────────────────
+    var STORAGE_KEY = "paautin-ai-settings";
+    var DEFAULT_SETTINGS = {
+        mode: "claude-code",
+        apiKey: "",
+        model: "claude-sonnet-4-20250514",
+        companionUrl: "http://localhost:3100",
+    };
+
+    var SYSTEM_PROMPT =
+        "You are a Node-RED expert assistant.\n" +
+        "You help users create, modify, debug, and understand Node-RED flows.\n\n" +
+        "Key conventions:\n" +
+        "- Node IDs: 16 hex chars, lowercase, unique across project\n" +
+        "- Every flow needs a Catch group for error handling\n" +
+        "- Nodes must have descriptive names\n" +
+        "- Canvas layout: left-to-right, grid-aligned (multiples of 20px)\n" +
+        "- Debug nodes: complete=true, targetType=full\n" +
+        "- Function nodes: use try/catch, node.error(msg, originalMsg), never throw\n\n" +
+        "When suggesting flow changes, provide valid JSON.\n" +
+        "Always respond in the same language the user writes in.";
+
+    // ── State ────────────────────────────────────────────────────
+    var settings = loadSettings();
     var conversation = [];
     var streaming = false;
-    var currentMode = "simple";
-    var includeContext = true;
     var abortController = null;
 
-    // ── DOM refs (set in buildUI) ───────────────────────────────
-    var $messages, $textarea, $sendBtn, $modeSelect, $contextToggle,
-        $clearBtn, $statusDot;
+    // ── DOM refs ─────────────────────────────────────────────────
+    var $messages, $textarea, $sendBtn, $stopBtn, $modeSelect,
+        $contextToggle, $clearBtn, $statusDot, $settingsPanel, $settingsBtn;
+    var includeContext = true;
 
-    // ── Markdown renderer (minimal) ─────────────────────────────
+    // ── Settings persistence (localStorage) ──────────────────────
+    function loadSettings() {
+        try {
+            var s = JSON.parse(localStorage.getItem(STORAGE_KEY));
+            return Object.assign({}, DEFAULT_SETTINGS, s || {});
+        } catch (_e) {
+            return Object.assign({}, DEFAULT_SETTINGS);
+        }
+    }
+
+    function saveSettings() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    }
+
+    // ── Markdown renderer (minimal) ──────────────────────────────
     function escapeHtml(text) {
         var div = document.createElement("div");
         div.appendChild(document.createTextNode(text));
@@ -23,22 +59,17 @@
     }
 
     function renderMarkdown(text) {
-        // Code blocks
         text = text.replace(/```(\w*)\n([\s\S]*?)```/g, function (_, lang, code) {
             return '<pre class="pai-code-block"><code>' + escapeHtml(code.trim()) + "</code></pre>";
         });
-        // Inline code
         text = text.replace(/`([^`\n]+)`/g, '<code class="pai-inline-code">$1</code>');
-        // Bold
         text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-        // Italic
         text = text.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>");
-        // Line breaks (but not inside pre)
         text = text.replace(/\n/g, "<br>");
         return text;
     }
 
-    // ── Gather flow context from editor ─────────────────────────
+    // ── Gather flow context from editor ──────────────────────────
     function gatherFlowContext() {
         var tabId = RED.workspaces.active();
         if (!tabId) return null;
@@ -46,148 +77,150 @@
         var nodes = [];
         RED.nodes.eachNode(function (n) {
             if (n.z === tabId) {
-                // Serialize only the essential properties
-                var obj = {
-                    id: n.id,
-                    type: n.type,
-                    name: n.name || "",
-                    x: n.x,
-                    y: n.y,
-                    wires: n.wires,
-                };
+                var obj = { id: n.id, type: n.type, name: n.name || "", x: n.x, y: n.y, wires: n.wires };
                 if (n.func) obj.func = n.func;
                 if (n.rules) obj.rules = n.rules;
-                if (n.action) obj.action = n.action;
                 nodes.push(obj);
             }
         });
 
-        // Include tab info
         var tab = RED.nodes.workspace(tabId);
-        return {
-            tabId: tabId,
-            tabLabel: tab ? tab.label : tabId,
-            nodeCount: nodes.length,
-            nodes: nodes,
-        };
+        return { tabId: tabId, tabLabel: tab ? tab.label : tabId, nodeCount: nodes.length, nodes: nodes };
     }
 
-    // ── UI Construction ─────────────────────────────────────────
+    // ── UI Construction ──────────────────────────────────────────
     function buildUI() {
-        // Main container
         var $content = $("<div>", { class: "pai-container" });
 
         // ─ Toolbar ─
         var $toolbar = $("<div>", { class: "pai-toolbar" });
 
+        $statusDot = $("<span>", { class: "pai-status-dot pai-status-idle" });
+
         $modeSelect = $("<select>", { class: "pai-mode-select" })
             .append('<option value="simple">API Directa</option>')
-            .append('<option value="claude-code">Claude Code</option>')
-            .append('<option value="server">Servidor</option>');
-
-        $statusDot = $("<span>", { class: "pai-status-dot pai-status-idle" });
+            .append('<option value="claude-code">Claude Code</option>');
+        $modeSelect.val(settings.mode);
 
         $contextToggle = $("<button>", {
             class: "pai-toolbar-btn pai-context-active",
             title: "Incluir flow activo como contexto",
         }).html('<i class="fa fa-sitemap"></i>');
 
+        $settingsBtn = $("<button>", {
+            class: "pai-toolbar-btn",
+            title: "Configuracion",
+        }).html('<i class="fa fa-cog"></i>');
+
         $clearBtn = $("<button>", {
             class: "pai-toolbar-btn",
             title: "Limpiar conversacion",
         }).html('<i class="fa fa-trash"></i>');
 
-        $toolbar.append($statusDot).append($modeSelect).append($contextToggle).append($clearBtn);
+        $toolbar.append($statusDot).append($modeSelect).append($contextToggle).append($settingsBtn).append($clearBtn);
+
+        // ─ Settings panel (hidden by default) ─
+        $settingsPanel = $("<div>", { class: "pai-settings", style: "display:none" });
+        $settingsPanel.html(
+            '<div class="pai-settings-row">' +
+            '  <label>API Key <small>(modo API Directa)</small></label>' +
+            '  <input type="password" id="pai-set-apikey" placeholder="sk-ant-..." value="' + escapeHtml(settings.apiKey) + '">' +
+            '</div>' +
+            '<div class="pai-settings-row">' +
+            '  <label>Modelo <small>(modo API Directa)</small></label>' +
+            '  <select id="pai-set-model">' +
+            '    <option value="claude-opus-4-20250514"' + (settings.model === "claude-opus-4-20250514" ? " selected" : "") + '>Opus 4</option>' +
+            '    <option value="claude-sonnet-4-20250514"' + (settings.model === "claude-sonnet-4-20250514" ? " selected" : "") + '>Sonnet 4</option>' +
+            '    <option value="claude-haiku-4-20250506"' + (settings.model === "claude-haiku-4-20250506" ? " selected" : "") + '>Haiku 4</option>' +
+            '  </select>' +
+            '</div>' +
+            '<div class="pai-settings-row">' +
+            '  <label>Companion URL <small>(modo Claude Code)</small></label>' +
+            '  <input type="text" id="pai-set-companion" value="' + escapeHtml(settings.companionUrl) + '">' +
+            '</div>' +
+            '<div class="pai-settings-row" style="text-align:right">' +
+            '  <button id="pai-set-save" class="pai-settings-save">Guardar</button>' +
+            '</div>'
+        );
 
         // ─ Messages area ─
         $messages = $("<div>", { class: "pai-messages" });
-
-        // Welcome message
         addMessageToUI("assistant",
-            "Hola! Soy el asistente AI de Paautin.\n\n" +
-            "Puedo ayudarte a crear, modificar y entender flujos de Node-RED.\n\n" +
-            "Configura tu API Key en el nodo **paautin-ai-config** para comenzar."
+            "Hola! Soy el asistente AI para Node-RED.\n\n" +
+            "**Modos disponibles:**\n" +
+            "- **API Directa**: usa tu API Key de Anthropic (configura en el engranaje)\n" +
+            "- **Claude Code**: conecta a tu `claude` CLI local (requiere companion server)\n\n" +
+            "Selecciona un modo arriba y escribe tu pregunta."
         );
 
         // ─ Input area ─
         var $inputArea = $("<div>", { class: "pai-input-area" });
-
-        $textarea = $("<textarea>", {
-            class: "pai-textarea",
-            placeholder: "Escribe tu mensaje...",
-            rows: 1,
-        });
-
-        $sendBtn = $("<button>", { class: "pai-send-btn" })
-            .html('<i class="fa fa-paper-plane"></i>');
-
-        var $stopBtn = $("<button>", { class: "pai-stop-btn", style: "display:none" })
-            .html('<i class="fa fa-stop"></i>');
-
+        $textarea = $("<textarea>", { class: "pai-textarea", placeholder: "Escribe tu mensaje...", rows: 1 });
+        $sendBtn = $("<button>", { class: "pai-send-btn" }).html('<i class="fa fa-paper-plane"></i>');
+        $stopBtn = $("<button>", { class: "pai-stop-btn", style: "display:none" }).html('<i class="fa fa-stop"></i>');
         $inputArea.append($textarea).append($sendBtn).append($stopBtn);
 
         // Assemble
-        $content.append($toolbar).append($messages).append($inputArea);
+        $content.append($toolbar).append($settingsPanel).append($messages).append($inputArea);
 
         // ─ Events ─
-        $sendBtn.on("click", function () {
-            sendMessage();
-        });
-
-        $stopBtn.on("click", function () {
-            if (abortController) abortController.abort();
-        });
-
+        $sendBtn.on("click", sendMessage);
+        $stopBtn.on("click", function () { if (abortController) abortController.abort(); });
         $textarea.on("keydown", function (e) {
-            if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
-
-        // Auto-resize textarea
         $textarea.on("input", function () {
             this.style.height = "auto";
             this.style.height = Math.min(this.scrollHeight, 120) + "px";
         });
-
-        $modeSelect.on("change", function () {
-            currentMode = $(this).val();
-        });
-
+        $modeSelect.on("change", function () { settings.mode = $(this).val(); saveSettings(); });
         $contextToggle.on("click", function () {
             includeContext = !includeContext;
             $(this).toggleClass("pai-context-active", includeContext);
-            $(this).attr("title", includeContext
-                ? "Incluir flow activo como contexto (activo)"
-                : "Incluir flow activo como contexto (inactivo)"
-            );
         });
-
+        $settingsBtn.on("click", function () { $settingsPanel.toggle(); });
         $clearBtn.on("click", function () {
             conversation = [];
             $messages.empty();
-            addMessageToUI("assistant", "Conversacion limpiada. Escribe tu pregunta.");
+            addMessageToUI("assistant", "Conversacion limpiada.");
         });
 
-        return {
-            content: $content,
-            toolbar: $toolbar,
-            sendBtn: $sendBtn,
-            stopBtn: $stopBtn,
-        };
+        // Settings save
+        $settingsPanel.on("click", "#pai-set-save", function () {
+            settings.apiKey = $("#pai-set-apikey").val().trim();
+            settings.model = $("#pai-set-model").val();
+            settings.companionUrl = $("#pai-set-companion").val().trim();
+            saveSettings();
+            $settingsPanel.hide();
+            updateStatusDot();
+        });
+
+        updateStatusDot();
+        return { content: $content, toolbar: $toolbar };
     }
 
-    // ── Messages ────────────────────────────────────────────────
-    function addMessageToUI(role, text) {
-        var $msg = $("<div>", {
-            class: "pai-msg pai-msg-" + role,
-        });
+    // ── Status indicator ─────────────────────────────────────────
+    function updateStatusDot() {
+        $statusDot.removeClass("pai-status-error");
+        if (settings.mode === "simple" && !settings.apiKey) {
+            $statusDot.addClass("pai-status-error").attr("title", "API Key no configurada");
+        } else if (settings.mode === "claude-code") {
+            // Check companion health
+            fetch(settings.companionUrl + "/health", { signal: AbortSignal.timeout(2000) })
+                .then(function (r) { return r.json(); })
+                .then(function () { $statusDot.attr("title", "Companion conectado"); })
+                .catch(function () {
+                    $statusDot.addClass("pai-status-error").attr("title", "Companion no disponible en " + settings.companionUrl);
+                });
+        }
+    }
 
+    // ── Messages ─────────────────────────────────────────────────
+    function addMessageToUI(role, text) {
+        var $msg = $("<div>", { class: "pai-msg pai-msg-" + role });
         var $bubble = $("<div>", { class: "pai-bubble pai-bubble-" + role });
         $bubble.html(renderMarkdown(text));
         $msg.append($bubble);
-
         $messages.append($msg);
         scrollToBottom();
         return $bubble;
@@ -197,10 +230,8 @@
         var $msg = $("<div>", { class: "pai-msg pai-msg-tool" });
         var label = typeof input === "object" ? JSON.stringify(input).substring(0, 80) : String(input);
         var $bubble = $("<div>", { class: "pai-bubble pai-bubble-tool" });
-        $bubble.html(
-            '<i class="fa fa-wrench"></i> <strong>' + escapeHtml(tool) + "</strong>" +
-            '<span class="pai-tool-detail">' + escapeHtml(label) + "...</span>"
-        );
+        $bubble.html('<i class="fa fa-wrench"></i> <strong>' + escapeHtml(tool) + "</strong> " +
+            '<span class="pai-tool-detail">' + escapeHtml(label) + "</span>");
         $msg.append($bubble);
         $messages.append($msg);
         scrollToBottom();
@@ -210,141 +241,166 @@
         $messages[0].scrollTop = $messages[0].scrollHeight;
     }
 
-    // ── Send / Stream ───────────────────────────────────────────
+    // ── Send message (routes to correct mode) ────────────────────
     function sendMessage() {
         var text = $textarea.val().trim();
         if (!text || streaming) return;
 
-        // Add to UI and conversation
         addMessageToUI("user", text);
         conversation.push({ role: "user", content: text });
         $textarea.val("").css("height", "auto");
 
-        // Gather context
         var flowContext = includeContext ? gatherFlowContext() : null;
 
-        // UI state
         streaming = true;
         $sendBtn.hide();
-        $(".pai-stop-btn").show();
+        $stopBtn.show();
         $statusDot.removeClass("pai-status-idle pai-status-error").addClass("pai-status-streaming");
 
-        // Create assistant message bubble (empty, will be filled by stream)
         var $bubble = addMessageToUI("assistant", "");
-        var fullText = "";
-
-        // Abort controller
         abortController = new AbortController();
 
-        fetch("paautin-ai/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                messages: conversation,
-                mode: currentMode,
-                flowContext: flowContext,
-            }),
-            signal: abortController.signal,
-        })
-            .then(function (response) {
-                if (!response.ok) {
-                    throw new Error("HTTP " + response.status);
-                }
-                var reader = response.body.getReader();
-                var decoder = new TextDecoder();
-                var buffer = "";
-
-                function read() {
-                    return reader.read().then(function (result) {
-                        if (result.done) {
-                            finishStream(fullText);
-                            return;
-                        }
-
-                        buffer += decoder.decode(result.value, { stream: true });
-                        var lines = buffer.split("\n");
-                        buffer = lines.pop();
-
-                        lines.forEach(function (line) {
-                            if (!line.startsWith("data: ")) return;
-                            var data = line.slice(6).trim();
-                            if (data === "[DONE]") return;
-
-                            try {
-                                var evt = JSON.parse(data);
-
-                                if (evt.type === "text") {
-                                    fullText += evt.content;
-                                    $bubble.html(renderMarkdown(fullText));
-                                    scrollToBottom();
-                                } else if (evt.type === "result" && typeof evt.content === "string") {
-                                    fullText = evt.content;
-                                    $bubble.html(renderMarkdown(fullText));
-                                    scrollToBottom();
-                                } else if (evt.type === "tool_use") {
-                                    addToolUseToUI(evt.content.tool, evt.content.input);
-                                } else if (evt.type === "error") {
-                                    $bubble.html(
-                                        '<span class="pai-error"><i class="fa fa-exclamation-triangle"></i> ' +
-                                        escapeHtml(evt.content) +
-                                        "</span>"
-                                    );
-                                    scrollToBottom();
-                                }
-                            } catch (_e) { /* skip */ }
-                        });
-
-                        return read();
-                    });
-                }
-
-                return read();
-            })
-            .catch(function (err) {
-                if (err.name === "AbortError") {
-                    $bubble.html($bubble.html() + '<br><em class="pai-stopped">[Detenido]</em>');
-                } else {
-                    $bubble.html(
-                        '<span class="pai-error"><i class="fa fa-exclamation-triangle"></i> ' +
-                        escapeHtml(err.message) +
-                        "</span>"
-                    );
-                }
-                finishStream(fullText);
-            });
-    }
-
-    function finishStream(fullText) {
-        streaming = false;
-        abortController = null;
-        $sendBtn.show();
-        $(".pai-stop-btn").hide();
-        $statusDot.removeClass("pai-status-streaming").addClass("pai-status-idle");
-
-        if (fullText) {
-            conversation.push({ role: "assistant", content: fullText });
+        var promise;
+        if (settings.mode === "simple") {
+            promise = streamAnthropicDirect(text, flowContext, $bubble);
+        } else {
+            promise = streamClaudeCode(text, flowContext, $bubble);
         }
 
-        $textarea.focus();
-    }
-
-    // ── Load config from server ─────────────────────────────────
-    function loadConfig() {
-        $.getJSON("paautin-ai/config", function (cfg) {
-            if (cfg.mode) {
-                currentMode = cfg.mode;
-                $modeSelect.val(currentMode);
-            }
-            if (cfg.hasApiKey) {
-                $statusDot.attr("title", "Configurado");
+        promise.catch(function (err) {
+            if (err.name === "AbortError") {
+                $bubble.html($bubble.html() + '<br><em class="pai-stopped">[Detenido]</em>');
             } else {
-                $statusDot.attr("title", "API Key no configurada");
-                $statusDot.addClass("pai-status-error");
+                $bubble.html('<span class="pai-error"><i class="fa fa-exclamation-triangle"></i> ' + escapeHtml(err.message) + "</span>");
             }
+        }).finally(function () {
+            finishStream($bubble);
         });
     }
 
-    // ── Register Plugin ─────────────────────────────────────────
+    // ── Mode: API Directa (browser → Anthropic) ─────────────────
+    function streamAnthropicDirect(text, flowContext, $bubble) {
+        if (!settings.apiKey) {
+            return Promise.reject(new Error("API Key no configurada. Abre el engranaje para configurarla."));
+        }
+
+        var messages = conversation.map(function (m) { return { role: m.role, content: m.content }; });
+        var system = SYSTEM_PROMPT;
+        if (flowContext && flowContext.nodes.length > 0) {
+            system += "\n\nActive flow (tab: " + flowContext.tabLabel + "):\n```json\n" +
+                JSON.stringify(flowContext.nodes, null, 2) + "\n```";
+        }
+
+        return fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-api-key": settings.apiKey,
+                "anthropic-version": "2023-06-01",
+                "anthropic-dangerous-direct-browser-access": "true",
+            },
+            body: JSON.stringify({
+                model: settings.model,
+                max_tokens: 8192,
+                system: system,
+                messages: messages,
+                stream: true,
+            }),
+            signal: abortController.signal,
+        }).then(function (response) {
+            if (!response.ok) {
+                return response.text().then(function (t) { throw new Error("Anthropic API " + response.status + ": " + t); });
+            }
+            return readSSEStream(response, $bubble, function (line) {
+                // Parse Anthropic SSE events
+                if (!line.startsWith("data: ")) return null;
+                var data = line.slice(6).trim();
+                if (!data || data === "[DONE]") return null;
+                try {
+                    var evt = JSON.parse(data);
+                    if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "text_delta") {
+                        return { type: "text", content: evt.delta.text };
+                    }
+                } catch (_e) {}
+                return null;
+            });
+        });
+    }
+
+    // ── Mode: Claude Code (browser → localhost companion) ────────
+    function streamClaudeCode(text, flowContext, $bubble) {
+        return fetch(settings.companionUrl + "/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: text, flowContext: flowContext }),
+            signal: abortController.signal,
+        }).then(function (response) {
+            if (!response.ok) {
+                return response.text().then(function (t) { throw new Error("Companion " + response.status + ": " + t); });
+            }
+            return readSSEStream(response, $bubble, function (line) {
+                if (!line.startsWith("data: ")) return null;
+                var data = line.slice(6).trim();
+                if (!data || data === "[DONE]") return null;
+                try { return JSON.parse(data); } catch (_e) { return null; }
+            });
+        });
+    }
+
+    // ── Generic SSE stream reader ────────────────────────────────
+    function readSSEStream(response, $bubble, parseLine) {
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = "";
+        var fullText = "";
+
+        function read() {
+            return reader.read().then(function (result) {
+                if (result.done) return fullText;
+
+                buffer += decoder.decode(result.value, { stream: true });
+                var lines = buffer.split("\n");
+                buffer = lines.pop();
+
+                lines.forEach(function (line) {
+                    var evt = parseLine(line);
+                    if (!evt) return;
+
+                    if (evt.type === "text") {
+                        fullText += evt.content;
+                        $bubble.html(renderMarkdown(fullText));
+                        scrollToBottom();
+                    } else if (evt.type === "result" && typeof evt.content === "string") {
+                        fullText = evt.content;
+                        $bubble.html(renderMarkdown(fullText));
+                        scrollToBottom();
+                    } else if (evt.type === "tool_use") {
+                        var c = evt.content || evt;
+                        addToolUseToUI(c.tool, c.input);
+                    } else if (evt.type === "error") {
+                        $bubble.html('<span class="pai-error"><i class="fa fa-exclamation-triangle"></i> ' + escapeHtml(evt.content) + "</span>");
+                    }
+                });
+
+                return read();
+            });
+        }
+
+        return read().then(function (text) {
+            if (text) conversation.push({ role: "assistant", content: text });
+        });
+    }
+
+    function finishStream() {
+        streaming = false;
+        abortController = null;
+        $sendBtn.show();
+        $stopBtn.hide();
+        $statusDot.removeClass("pai-status-streaming").addClass("pai-status-idle");
+        $textarea.focus();
+    }
+
+    // ── Register Plugin ──────────────────────────────────────────
     RED.plugins.registerPlugin("paautin-ai-sidebar", {
         type: "paautin-ai",
         onadd: function () {
@@ -364,248 +420,91 @@
             RED.actions.add("core:show-paautin-ai-tab", function () {
                 RED.sidebar.show("paautin-ai");
             });
-
-            // Load config once editor is ready
-            RED.events.on("runtime-state", function () {
-                loadConfig();
-            });
         },
     });
 })();
 </script>
 
-<!-- ── Styles ─────────────────────────────────────────────────── -->
+<!-- ── Styles ──────────────────────────────────────────────────── -->
 <style>
-/* Container */
 .pai-container {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
+    display: flex; flex-direction: column; height: 100%;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    font-size: 13px;
-    background: #f7f7f7;
+    font-size: 13px; background: #f7f7f7;
 }
-
-/* Toolbar */
 .pai-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
-    background: #eee;
-    border-bottom: 1px solid #ddd;
-    flex-shrink: 0;
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px; background: #eee; border-bottom: 1px solid #ddd; flex-shrink: 0;
 }
-
 .pai-mode-select {
-    flex: 1;
-    font-size: 11px;
-    padding: 3px 4px;
-    border: 1px solid #ccc;
-    border-radius: 3px;
-    background: #fff;
+    flex: 1; font-size: 11px; padding: 3px 4px;
+    border: 1px solid #ccc; border-radius: 3px; background: #fff;
 }
-
 .pai-toolbar-btn {
-    background: none;
-    border: 1px solid transparent;
-    cursor: pointer;
-    padding: 3px 6px;
-    border-radius: 3px;
-    color: #666;
-    font-size: 12px;
+    background: none; border: 1px solid transparent; cursor: pointer;
+    padding: 3px 6px; border-radius: 3px; color: #666; font-size: 12px;
 }
-.pai-toolbar-btn:hover {
-    background: #ddd;
-    border-color: #ccc;
-}
-
-.pai-context-active {
-    color: #2196f3 !important;
-    border-color: #2196f3 !important;
-    background: #e3f2fd !important;
-}
-
-.pai-status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-    flex-shrink: 0;
-}
+.pai-toolbar-btn:hover { background: #ddd; border-color: #ccc; }
+.pai-context-active { color: #2196f3 !important; border-color: #2196f3 !important; background: #e3f2fd !important; }
+.pai-status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 .pai-status-idle { background: #4caf50; }
 .pai-status-streaming { background: #ff9800; animation: pai-pulse 1s infinite; }
 .pai-status-error { background: #f44336; }
+@keyframes pai-pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
 
-@keyframes pai-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+/* Settings panel */
+.pai-settings {
+    padding: 10px; background: #fff; border-bottom: 1px solid #ddd; flex-shrink: 0;
 }
+.pai-settings-row { margin-bottom: 8px; }
+.pai-settings-row label { display: block; font-size: 11px; font-weight: 600; color: #555; margin-bottom: 3px; }
+.pai-settings-row small { font-weight: normal; color: #999; }
+.pai-settings-row input, .pai-settings-row select {
+    width: 100%; padding: 5px 8px; font-size: 12px; border: 1px solid #ccc;
+    border-radius: 4px; box-sizing: border-box;
+}
+.pai-settings-save {
+    background: #2196f3; color: #fff; border: none; padding: 5px 16px;
+    border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.pai-settings-save:hover { background: #1976d2; }
 
 /* Messages */
-.pai-messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 10px 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.pai-msg {
-    display: flex;
-    max-width: 100%;
-}
-
-.pai-msg-user {
-    justify-content: flex-end;
-}
-
-.pai-msg-assistant, .pai-msg-tool {
-    justify-content: flex-start;
-}
-
-.pai-bubble {
-    padding: 8px 12px;
-    border-radius: 12px;
-    max-width: 92%;
-    line-height: 1.45;
-    word-break: break-word;
-}
-
-.pai-bubble-user {
-    background: #2196f3;
-    color: #fff;
-    border-bottom-right-radius: 4px;
-}
-
-.pai-bubble-assistant {
-    background: #fff;
-    color: #333;
-    border: 1px solid #e0e0e0;
-    border-bottom-left-radius: 4px;
-}
-
-.pai-bubble-tool {
-    background: #fff3e0;
-    color: #e65100;
-    border: 1px solid #ffe0b2;
-    border-radius: 8px;
-    font-size: 11px;
-    padding: 5px 10px;
-}
-
-.pai-tool-detail {
-    margin-left: 6px;
-    color: #999;
-    font-size: 10px;
-}
-
-/* Code blocks */
+.pai-messages { flex: 1; overflow-y: auto; padding: 10px 8px; display: flex; flex-direction: column; gap: 8px; }
+.pai-msg { display: flex; max-width: 100%; }
+.pai-msg-user { justify-content: flex-end; }
+.pai-msg-assistant, .pai-msg-tool { justify-content: flex-start; }
+.pai-bubble { padding: 8px 12px; border-radius: 12px; max-width: 92%; line-height: 1.45; word-break: break-word; }
+.pai-bubble-user { background: #2196f3; color: #fff; border-bottom-right-radius: 4px; }
+.pai-bubble-assistant { background: #fff; color: #333; border: 1px solid #e0e0e0; border-bottom-left-radius: 4px; }
+.pai-bubble-tool { background: #fff3e0; color: #e65100; border: 1px solid #ffe0b2; border-radius: 8px; font-size: 11px; padding: 5px 10px; }
+.pai-tool-detail { margin-left: 6px; color: #999; font-size: 10px; }
 .pai-code-block {
-    background: #1e1e1e;
-    color: #d4d4d4;
-    padding: 8px 10px;
-    border-radius: 6px;
-    overflow-x: auto;
-    font-family: "Menlo", "Monaco", "Courier New", monospace;
-    font-size: 11px;
-    line-height: 1.4;
-    margin: 6px 0;
-    white-space: pre;
+    background: #1e1e1e; color: #d4d4d4; padding: 8px 10px; border-radius: 6px;
+    overflow-x: auto; font-family: "Menlo","Monaco","Courier New",monospace;
+    font-size: 11px; line-height: 1.4; margin: 6px 0; white-space: pre;
 }
+.pai-inline-code { background: #f0f0f0; color: #c7254e; padding: 1px 4px; border-radius: 3px; font-family: "Menlo","Monaco","Courier New",monospace; font-size: 11px; }
+.pai-bubble-user .pai-inline-code { background: rgba(255,255,255,0.2); color: #fff; }
+.pai-error { color: #d32f2f; }
+.pai-stopped { color: #999; font-size: 11px; }
 
-.pai-inline-code {
-    background: #f0f0f0;
-    color: #c7254e;
-    padding: 1px 4px;
-    border-radius: 3px;
-    font-family: "Menlo", "Monaco", "Courier New", monospace;
-    font-size: 11px;
-}
-
-.pai-bubble-user .pai-inline-code {
-    background: rgba(255,255,255,0.2);
-    color: #fff;
-}
-
-/* Error */
-.pai-error {
-    color: #d32f2f;
-}
-
-.pai-stopped {
-    color: #999;
-    font-size: 11px;
-}
-
-/* Input area */
-.pai-input-area {
-    display: flex;
-    align-items: flex-end;
-    gap: 6px;
-    padding: 8px;
-    border-top: 1px solid #ddd;
-    background: #fff;
-    flex-shrink: 0;
-}
-
+/* Input */
+.pai-input-area { display: flex; align-items: flex-end; gap: 6px; padding: 8px; border-top: 1px solid #ddd; background: #fff; flex-shrink: 0; }
 .pai-textarea {
-    flex: 1;
-    resize: none;
-    border: 1px solid #ccc;
-    border-radius: 8px;
-    padding: 8px 10px;
-    font-size: 13px;
-    font-family: inherit;
-    line-height: 1.4;
-    max-height: 120px;
-    outline: none;
+    flex: 1; resize: none; border: 1px solid #ccc; border-radius: 8px; padding: 8px 10px;
+    font-size: 13px; font-family: inherit; line-height: 1.4; max-height: 120px; outline: none;
 }
-
-.pai-textarea:focus {
-    border-color: #2196f3;
-    box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.15);
-}
-
+.pai-textarea:focus { border-color: #2196f3; box-shadow: 0 0 0 2px rgba(33,150,243,0.15); }
 .pai-send-btn, .pai-stop-btn {
-    width: 34px;
-    height: 34px;
-    border: none;
-    border-radius: 50%;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    font-size: 14px;
+    width: 34px; height: 34px; border: none; border-radius: 50%; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 14px;
 }
-
-.pai-send-btn {
-    background: #2196f3;
-    color: #fff;
-}
-.pai-send-btn:hover {
-    background: #1976d2;
-}
-
-.pai-stop-btn {
-    background: #f44336;
-    color: #fff;
-}
-.pai-stop-btn:hover {
-    background: #d32f2f;
-}
-
-/* Scrollbar */
-.pai-messages::-webkit-scrollbar {
-    width: 5px;
-}
-.pai-messages::-webkit-scrollbar-track {
-    background: transparent;
-}
-.pai-messages::-webkit-scrollbar-thumb {
-    background: #ccc;
-    border-radius: 3px;
-}
+.pai-send-btn { background: #2196f3; color: #fff; }
+.pai-send-btn:hover { background: #1976d2; }
+.pai-stop-btn { background: #f44336; color: #fff; }
+.pai-stop-btn:hover { background: #d32f2f; }
+.pai-messages::-webkit-scrollbar { width: 5px; }
+.pai-messages::-webkit-scrollbar-track { background: transparent; }
+.pai-messages::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
 </style>
