@@ -7,24 +7,73 @@
     // ── Constants ────────────────────────────────────────────────
     var STORAGE_KEY = "paautin-ai-settings";
     var DEFAULT_SETTINGS = {
-        mode: "claude-code",
+        mode: "simple",
         apiKey: "",
         model: "claude-sonnet-4-20250514",
         companionUrl: "http://localhost:3100",
     };
 
     var SYSTEM_PROMPT =
-        "You are a Node-RED expert assistant.\n" +
+        "You are a Node-RED expert assistant integrated into the Node-RED editor.\n" +
         "You help users create, modify, debug, and understand Node-RED flows.\n\n" +
-        "Key conventions:\n" +
-        "- Node IDs: 16 hex chars, lowercase, unique across project\n" +
-        "- Every flow needs a Catch group for error handling\n" +
-        "- Nodes must have descriptive names\n" +
-        "- Canvas layout: left-to-right, grid-aligned (multiples of 20px)\n" +
-        "- Debug nodes: complete=true, targetType=full\n" +
-        "- Function nodes: use try/catch, node.error(msg, originalMsg), never throw\n\n" +
-        "When suggesting flow changes, provide valid JSON.\n" +
+        "IMPORTANT: You have tools to directly manipulate the Node-RED canvas.\n" +
+        "When the user asks you to create, add, modify, move, or delete nodes, USE THE TOOLS.\n" +
+        "Do not just describe what to do — actually do it with the tools.\n\n" +
+        "Node-RED conventions:\n" +
+        "- Node IDs: 16 lowercase hex chars (e.g. 'a1b2c3d4e5f67890'), must be unique\n" +
+        "- The 'z' property must match the active tab ID (provided in context)\n" +
+        "- Wires: array of arrays. wires[0] = output 0 connections, each is a target node ID\n" +
+        "- Canvas layout: left-to-right, x/y in multiples of 20. Start x ~200, y ~100\n" +
+        "- Horizontal spacing: ~200px between nodes. Vertical: ~60px between parallel branches\n" +
+        "- Every flow should have error handling (catch + debug nodes)\n" +
+        "- Debug nodes: complete msg object (complete:'true', targetType:'full')\n" +
+        "- Function nodes: wrap in try/catch, use node.error(err, msg) on failure\n" +
+        "- Always give nodes descriptive names\n\n" +
+        "Common node types: inject, debug, function, change, switch, http in, http response,\n" +
+        "template, delay, link in, link out, link call, catch, status, comment, subflow\n\n" +
         "Always respond in the same language the user writes in.";
+
+    // ── Canvas Tools for Anthropic API ──────────────────────────
+    var CANVAS_TOOLS = [
+        {
+            name: "import_nodes",
+            description: "Import new Node-RED nodes to the active canvas tab. The nodes will appear visually in the editor. The user must click Deploy to activate. Always set z to the active tab ID from context. Generate unique 16-char hex IDs for each node.",
+            input_schema: {
+                type: "object",
+                properties: {
+                    nodes: {
+                        type: "array",
+                        description: "Array of Node-RED node objects. Required properties: id (16 hex), type, name, x, y, z (active tab id), wires (array of arrays). Optional: func (function nodes), rules (switch nodes), etc.",
+                        items: { type: "object" }
+                    }
+                },
+                required: ["nodes"]
+            }
+        },
+        {
+            name: "update_node",
+            description: "Update properties of an existing node on the canvas. Only specified properties are changed. Can update: name, func, rules, wires, x, y, or any other node property.",
+            input_schema: {
+                type: "object",
+                properties: {
+                    node_id: { type: "string", description: "ID of the existing node to update" },
+                    properties: { type: "object", description: "Key-value pairs of properties to set (e.g. {name:'New Name', func:'return msg;'})" }
+                },
+                required: ["node_id", "properties"]
+            }
+        },
+        {
+            name: "delete_nodes",
+            description: "Delete nodes from the canvas by their IDs. Removes nodes and their connections.",
+            input_schema: {
+                type: "object",
+                properties: {
+                    node_ids: { type: "array", items: { type: "string" }, description: "Array of node IDs to remove from the canvas" }
+                },
+                required: ["node_ids"]
+            }
+        }
+    ];
 
     // ── State ────────────────────────────────────────────────────
     var settings = loadSettings();
@@ -86,6 +135,66 @@
 
         var tab = RED.nodes.workspace(tabId);
         return { tabId: tabId, tabLabel: tab ? tab.label : tabId, nodeCount: nodes.length, nodes: nodes };
+    }
+
+    // ── Canvas Actions ───────────────────────────────────────────
+    function executeCanvasAction(toolName, input) {
+        var tabId = RED.workspaces.active();
+        var result = { success: false, message: "" };
+
+        try {
+            if (toolName === "import_nodes") {
+                var nodes = input.nodes || [];
+                // Ensure z is set to active tab
+                nodes.forEach(function (n) {
+                    if (!n.z) n.z = tabId;
+                });
+                RED.nodes.import(JSON.stringify(nodes));
+                RED.nodes.dirty(true);
+                RED.view.redraw(true);
+                var names = nodes.map(function (n) { return n.name || n.type; }).join(", ");
+                result.success = true;
+                result.message = "Imported " + nodes.length + " nodes: " + names;
+
+            } else if (toolName === "update_node") {
+                var node = RED.nodes.node(input.node_id);
+                if (!node) {
+                    result.message = "Node " + input.node_id + " not found on canvas.";
+                } else {
+                    var props = input.properties || {};
+                    Object.keys(props).forEach(function (key) {
+                        node[key] = props[key];
+                    });
+                    node.changed = true;
+                    node.dirty = true;
+                    RED.nodes.dirty(true);
+                    RED.view.redraw(true);
+                    result.success = true;
+                    result.message = "Updated node " + (node.name || node.id) + " (" + Object.keys(props).join(", ") + ")";
+                }
+
+            } else if (toolName === "delete_nodes") {
+                var ids = input.node_ids || [];
+                var deleted = 0;
+                ids.forEach(function (id) {
+                    var n = RED.nodes.node(id);
+                    if (n) {
+                        RED.nodes.remove(id);
+                        deleted++;
+                    }
+                });
+                RED.nodes.dirty(true);
+                RED.view.redraw(true);
+                result.success = true;
+                result.message = "Deleted " + deleted + " of " + ids.length + " nodes.";
+            } else {
+                result.message = "Unknown tool: " + toolName;
+            }
+        } catch (err) {
+            result.message = "Canvas error: " + err.message;
+        }
+
+        return result;
     }
 
     // ── Logo (base64 embedded) ─────────────────────────────────
@@ -158,6 +267,7 @@
         $messages = $("<div>", { class: "pai-messages" });
         addMessageToUI("assistant",
             "Hola! Soy el asistente AI de **HainTech** para Node-RED.\n" +
+            "Puedo crear, modificar y eliminar nodos directamente en el canvas.\n" +
             "Selecciona un modo arriba y escribe tu pregunta."
         );
 
@@ -213,7 +323,6 @@
         if (settings.mode === "simple" && !settings.apiKey) {
             $statusDot.addClass("pai-status-error").attr("title", "API Key no configurada");
         } else if (settings.mode === "claude-code") {
-            // Check companion health
             fetch(settings.companionUrl + "/health", { signal: AbortSignal.timeout(2000) })
                 .then(function (r) { return r.json(); })
                 .then(function () { $statusDot.attr("title", "Companion conectado"); })
@@ -245,6 +354,17 @@
         scrollToBottom();
     }
 
+    function addActionToUI(toolName, result) {
+        var $msg = $("<div>", { class: "pai-msg pai-msg-action" });
+        var icon = result.success ? "fa-check-circle" : "fa-times-circle";
+        var cls = result.success ? "pai-action-ok" : "pai-action-fail";
+        var $bubble = $("<div>", { class: "pai-bubble pai-bubble-action " + cls });
+        $bubble.html('<i class="fa ' + icon + '"></i> ' + escapeHtml(result.message));
+        $msg.append($bubble);
+        $messages.append($msg);
+        scrollToBottom();
+    }
+
     function scrollToBottom() {
         $messages[0].scrollTop = $messages[0].scrollHeight;
     }
@@ -265,74 +385,199 @@
         $stopBtn.show();
         $statusDot.removeClass("pai-status-idle pai-status-error").addClass("pai-status-streaming");
 
-        var $bubble = addMessageToUI("assistant", "");
-        abortController = new AbortController();
-
         var promise;
         if (settings.mode === "simple") {
-            promise = streamAnthropicDirect(text, flowContext, $bubble);
+            promise = streamAnthropicDirect(flowContext);
         } else {
+            var $bubble = addMessageToUI("assistant", "");
             promise = streamClaudeCode(text, flowContext, $bubble);
         }
 
         promise.catch(function (err) {
-            if (err.name === "AbortError") {
-                $bubble.html($bubble.html() + '<br><em class="pai-stopped">[Detenido]</em>');
-            } else {
-                $bubble.html('<span class="pai-error"><i class="fa fa-exclamation-triangle"></i> ' + escapeHtml(err.message) + "</span>");
+            if (err.name !== "AbortError") {
+                addMessageToUI("assistant", "");
+                $messages.find(".pai-bubble-assistant").last()
+                    .html('<span class="pai-error"><i class="fa fa-exclamation-triangle"></i> ' + escapeHtml(err.message) + "</span>");
             }
         }).finally(function () {
-            finishStream($bubble);
+            finishStream();
         });
     }
 
-    // ── Mode: API Directa (browser → Anthropic) ─────────────────
-    function streamAnthropicDirect(text, flowContext, $bubble) {
+    // ── Mode: API Directa with Tool Use (browser → Anthropic) ───
+    function streamAnthropicDirect(flowContext) {
         if (!settings.apiKey) {
             return Promise.reject(new Error("API Key no configurada. Abre el engranaje para configurarla."));
         }
 
-        var messages = conversation.map(function (m) { return { role: m.role, content: m.content }; });
+        // Build system prompt with flow context
         var system = SYSTEM_PROMPT;
+        var tabId = RED.workspaces.active();
+        if (tabId) {
+            var tab = RED.nodes.workspace(tabId);
+            system += "\n\nActive tab ID: " + tabId + " (label: " + (tab ? tab.label : "unknown") + ")";
+            system += "\nUse this as the 'z' value when creating nodes.";
+        }
         if (flowContext && flowContext.nodes.length > 0) {
-            system += "\n\nActive flow (tab: " + flowContext.tabLabel + "):\n```json\n" +
+            system += "\n\nCurrent nodes on this tab (" + flowContext.nodeCount + " nodes):\n```json\n" +
                 JSON.stringify(flowContext.nodes, null, 2) + "\n```";
         }
 
-        return fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "x-api-key": settings.apiKey,
-                "anthropic-version": "2023-06-01",
-                "anthropic-dangerous-direct-browser-access": "true",
-            },
-            body: JSON.stringify({
-                model: settings.model,
-                max_tokens: 8192,
-                system: system,
-                messages: messages,
-                stream: true,
-            }),
-            signal: abortController.signal,
-        }).then(function (response) {
-            if (!response.ok) {
-                return response.text().then(function (t) { throw new Error("Anthropic API " + response.status + ": " + t); });
-            }
-            return readSSEStream(response, $bubble, function (line) {
-                // Parse Anthropic SSE events
-                if (!line.startsWith("data: ")) return null;
-                var data = line.slice(6).trim();
-                if (!data || data === "[DONE]") return null;
-                try {
-                    var evt = JSON.parse(data);
-                    if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "text_delta") {
-                        return { type: "text", content: evt.delta.text };
-                    }
-                } catch (_e) {}
-                return null;
-            });
+        // Build messages from conversation
+        var messages = conversation.map(function (m) {
+            return { role: m.role, content: m.content };
         });
+
+        // Recursive function to handle multi-turn tool use
+        function doRequest(msgs) {
+            return fetch("https://api.anthropic.com/v1/messages", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-api-key": settings.apiKey,
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-dangerous-direct-browser-access": "true",
+                },
+                body: JSON.stringify({
+                    model: settings.model,
+                    max_tokens: 8192,
+                    system: system,
+                    messages: msgs,
+                    tools: CANVAS_TOOLS,
+                    stream: true,
+                }),
+                signal: abortController.signal,
+            }).then(function (response) {
+                if (!response.ok) {
+                    return response.text().then(function (t) {
+                        throw new Error("Anthropic API " + response.status + ": " + t);
+                    });
+                }
+
+                // Create a bubble for this response
+                var $bubble = addMessageToUI("assistant", "");
+                return parseAnthropicToolStream(response, $bubble);
+
+            }).then(function (result) {
+                // result = { content: [...], stop_reason, fullText }
+
+                // Add assistant message to messages for multi-turn
+                msgs.push({ role: "assistant", content: result.content });
+
+                // Execute any tool uses and collect results
+                var toolResults = [];
+                result.content.forEach(function (block) {
+                    if (block.type === "tool_use") {
+                        var actionResult = executeCanvasAction(block.name, block.input);
+                        addActionToUI(block.name, actionResult);
+                        toolResults.push({
+                            type: "tool_result",
+                            tool_use_id: block.id,
+                            content: JSON.stringify(actionResult)
+                        });
+                    }
+                });
+
+                // If Claude used tools, send results back and continue
+                if (result.stop_reason === "tool_use" && toolResults.length > 0) {
+                    msgs.push({ role: "user", content: toolResults });
+                    return doRequest(msgs);
+                }
+
+                // Conversation is done — save the final text
+                if (result.fullText) {
+                    conversation.push({ role: "assistant", content: result.fullText });
+                }
+            });
+        }
+
+        return doRequest(messages);
+    }
+
+    // ── Parse Anthropic stream with tool use support ─────────────
+    function parseAnthropicToolStream(response, $bubble) {
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = "";
+
+        // Track content blocks
+        var contentBlocks = [];
+        var fullText = "";
+        var stopReason = null;
+
+        function processLine(line) {
+            if (!line.startsWith("data: ")) return;
+            var data = line.slice(6).trim();
+            if (!data || data === "[DONE]") return;
+
+            try {
+                var evt = JSON.parse(data);
+
+                if (evt.type === "content_block_start") {
+                    var block = {
+                        type: evt.content_block.type,
+                        text: evt.content_block.text || "",
+                        id: evt.content_block.id || null,
+                        name: evt.content_block.name || null,
+                        inputJson: ""
+                    };
+                    contentBlocks[evt.index] = block;
+
+                    // Show tool indicator immediately
+                    if (block.type === "tool_use") {
+                        addToolUseToUI(block.name, "preparando...");
+                    }
+
+                } else if (evt.type === "content_block_delta") {
+                    var b = contentBlocks[evt.index];
+                    if (!b) return;
+
+                    if (evt.delta.type === "text_delta") {
+                        b.text += evt.delta.text;
+                        fullText += evt.delta.text;
+                        $bubble.html(renderMarkdown(fullText));
+                        scrollToBottom();
+                    } else if (evt.delta.type === "input_json_delta") {
+                        b.inputJson += evt.delta.partial_json;
+                    }
+
+                } else if (evt.type === "message_delta") {
+                    if (evt.delta && evt.delta.stop_reason) {
+                        stopReason = evt.delta.stop_reason;
+                    }
+                }
+            } catch (_e) { /* skip malformed lines */ }
+        }
+
+        function read() {
+            return reader.read().then(function (result) {
+                if (result.done) {
+                    // Build content array for the conversation
+                    var content = [];
+                    contentBlocks.forEach(function (b) {
+                        if (!b) return;
+                        if (b.type === "text" && b.text) {
+                            content.push({ type: "text", text: b.text });
+                        } else if (b.type === "tool_use") {
+                            var input = {};
+                            try { input = JSON.parse(b.inputJson); } catch (_e) {}
+                            content.push({ type: "tool_use", id: b.id, name: b.name, input: input });
+                        }
+                    });
+
+                    return { content: content, stop_reason: stopReason, fullText: fullText };
+                }
+
+                buffer += decoder.decode(result.value, { stream: true });
+                var lines = buffer.split("\n");
+                buffer = lines.pop();
+                lines.forEach(processLine);
+
+                return read();
+            });
+        }
+
+        return read();
     }
 
     // ── Mode: Claude Code (browser → localhost companion) ────────
@@ -355,7 +600,7 @@
         });
     }
 
-    // ── Generic SSE stream reader ────────────────────────────────
+    // ── Generic SSE stream reader (for Claude Code mode) ─────────
     function readSSEStream(response, $bubble, parseLine) {
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
@@ -488,12 +733,20 @@
 .pai-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 8px; display: flex; flex-direction: column; gap: 8px; }
 .pai-msg { display: flex; max-width: 100%; }
 .pai-msg-user { justify-content: flex-end; }
-.pai-msg-assistant, .pai-msg-tool { justify-content: flex-start; }
+.pai-msg-assistant, .pai-msg-tool, .pai-msg-action { justify-content: flex-start; }
 .pai-bubble { padding: 8px 12px; border-radius: 12px; max-width: 92%; line-height: 1.45; word-break: break-word; }
 .pai-bubble-user { background: #2196f3; color: #fff; border-bottom-right-radius: 4px; }
 .pai-bubble-assistant { background: #fff; color: #333; border: 1px solid #e0e0e0; border-bottom-left-radius: 4px; }
 .pai-bubble-tool { background: #fff3e0; color: #e65100; border: 1px solid #ffe0b2; border-radius: 8px; font-size: 11px; padding: 5px 10px; }
 .pai-tool-detail { margin-left: 6px; color: #999; font-size: 10px; }
+
+/* Canvas action results */
+.pai-bubble-action { border-radius: 8px; font-size: 11px; padding: 5px 10px; }
+.pai-action-ok { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+.pai-action-ok .fa { color: #4caf50; }
+.pai-action-fail { background: #fce4ec; color: #c62828; border: 1px solid #f8bbd0; }
+.pai-action-fail .fa { color: #f44336; }
+
 .pai-code-block {
     background: #1e1e1e; color: #d4d4d4; padding: 8px 10px; border-radius: 6px;
     overflow-x: auto; font-family: "Menlo","Monaco","Courier New",monospace;
