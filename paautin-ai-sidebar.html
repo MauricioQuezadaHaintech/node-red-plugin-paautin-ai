@@ -1,0 +1,611 @@
+<!-- Editor-side: Sidebar chat plugin for Paautin AI -->
+
+<script type="text/javascript">
+(function () {
+    "use strict";
+
+    // ── State ───────────────────────────────────────────────────
+    var conversation = [];
+    var streaming = false;
+    var currentMode = "simple";
+    var includeContext = true;
+    var abortController = null;
+
+    // ── DOM refs (set in buildUI) ───────────────────────────────
+    var $messages, $textarea, $sendBtn, $modeSelect, $contextToggle,
+        $clearBtn, $statusDot;
+
+    // ── Markdown renderer (minimal) ─────────────────────────────
+    function escapeHtml(text) {
+        var div = document.createElement("div");
+        div.appendChild(document.createTextNode(text));
+        return div.innerHTML;
+    }
+
+    function renderMarkdown(text) {
+        // Code blocks
+        text = text.replace(/```(\w*)\n([\s\S]*?)```/g, function (_, lang, code) {
+            return '<pre class="pai-code-block"><code>' + escapeHtml(code.trim()) + "</code></pre>";
+        });
+        // Inline code
+        text = text.replace(/`([^`\n]+)`/g, '<code class="pai-inline-code">$1</code>');
+        // Bold
+        text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        // Italic
+        text = text.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>");
+        // Line breaks (but not inside pre)
+        text = text.replace(/\n/g, "<br>");
+        return text;
+    }
+
+    // ── Gather flow context from editor ─────────────────────────
+    function gatherFlowContext() {
+        var tabId = RED.workspaces.active();
+        if (!tabId) return null;
+
+        var nodes = [];
+        RED.nodes.eachNode(function (n) {
+            if (n.z === tabId) {
+                // Serialize only the essential properties
+                var obj = {
+                    id: n.id,
+                    type: n.type,
+                    name: n.name || "",
+                    x: n.x,
+                    y: n.y,
+                    wires: n.wires,
+                };
+                if (n.func) obj.func = n.func;
+                if (n.rules) obj.rules = n.rules;
+                if (n.action) obj.action = n.action;
+                nodes.push(obj);
+            }
+        });
+
+        // Include tab info
+        var tab = RED.nodes.workspace(tabId);
+        return {
+            tabId: tabId,
+            tabLabel: tab ? tab.label : tabId,
+            nodeCount: nodes.length,
+            nodes: nodes,
+        };
+    }
+
+    // ── UI Construction ─────────────────────────────────────────
+    function buildUI() {
+        // Main container
+        var $content = $("<div>", { class: "pai-container" });
+
+        // ─ Toolbar ─
+        var $toolbar = $("<div>", { class: "pai-toolbar" });
+
+        $modeSelect = $("<select>", { class: "pai-mode-select" })
+            .append('<option value="simple">API Directa</option>')
+            .append('<option value="claude-code">Claude Code</option>')
+            .append('<option value="server">Servidor</option>');
+
+        $statusDot = $("<span>", { class: "pai-status-dot pai-status-idle" });
+
+        $contextToggle = $("<button>", {
+            class: "pai-toolbar-btn pai-context-active",
+            title: "Incluir flow activo como contexto",
+        }).html('<i class="fa fa-sitemap"></i>');
+
+        $clearBtn = $("<button>", {
+            class: "pai-toolbar-btn",
+            title: "Limpiar conversacion",
+        }).html('<i class="fa fa-trash"></i>');
+
+        $toolbar.append($statusDot).append($modeSelect).append($contextToggle).append($clearBtn);
+
+        // ─ Messages area ─
+        $messages = $("<div>", { class: "pai-messages" });
+
+        // Welcome message
+        addMessageToUI("assistant",
+            "Hola! Soy el asistente AI de Paautin.\n\n" +
+            "Puedo ayudarte a crear, modificar y entender flujos de Node-RED.\n\n" +
+            "Configura tu API Key en el nodo **paautin-ai-config** para comenzar."
+        );
+
+        // ─ Input area ─
+        var $inputArea = $("<div>", { class: "pai-input-area" });
+
+        $textarea = $("<textarea>", {
+            class: "pai-textarea",
+            placeholder: "Escribe tu mensaje...",
+            rows: 1,
+        });
+
+        $sendBtn = $("<button>", { class: "pai-send-btn" })
+            .html('<i class="fa fa-paper-plane"></i>');
+
+        var $stopBtn = $("<button>", { class: "pai-stop-btn", style: "display:none" })
+            .html('<i class="fa fa-stop"></i>');
+
+        $inputArea.append($textarea).append($sendBtn).append($stopBtn);
+
+        // Assemble
+        $content.append($toolbar).append($messages).append($inputArea);
+
+        // ─ Events ─
+        $sendBtn.on("click", function () {
+            sendMessage();
+        });
+
+        $stopBtn.on("click", function () {
+            if (abortController) abortController.abort();
+        });
+
+        $textarea.on("keydown", function (e) {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Auto-resize textarea
+        $textarea.on("input", function () {
+            this.style.height = "auto";
+            this.style.height = Math.min(this.scrollHeight, 120) + "px";
+        });
+
+        $modeSelect.on("change", function () {
+            currentMode = $(this).val();
+        });
+
+        $contextToggle.on("click", function () {
+            includeContext = !includeContext;
+            $(this).toggleClass("pai-context-active", includeContext);
+            $(this).attr("title", includeContext
+                ? "Incluir flow activo como contexto (activo)"
+                : "Incluir flow activo como contexto (inactivo)"
+            );
+        });
+
+        $clearBtn.on("click", function () {
+            conversation = [];
+            $messages.empty();
+            addMessageToUI("assistant", "Conversacion limpiada. Escribe tu pregunta.");
+        });
+
+        return {
+            content: $content,
+            toolbar: $toolbar,
+            sendBtn: $sendBtn,
+            stopBtn: $stopBtn,
+        };
+    }
+
+    // ── Messages ────────────────────────────────────────────────
+    function addMessageToUI(role, text) {
+        var $msg = $("<div>", {
+            class: "pai-msg pai-msg-" + role,
+        });
+
+        var $bubble = $("<div>", { class: "pai-bubble pai-bubble-" + role });
+        $bubble.html(renderMarkdown(text));
+        $msg.append($bubble);
+
+        $messages.append($msg);
+        scrollToBottom();
+        return $bubble;
+    }
+
+    function addToolUseToUI(tool, input) {
+        var $msg = $("<div>", { class: "pai-msg pai-msg-tool" });
+        var label = typeof input === "object" ? JSON.stringify(input).substring(0, 80) : String(input);
+        var $bubble = $("<div>", { class: "pai-bubble pai-bubble-tool" });
+        $bubble.html(
+            '<i class="fa fa-wrench"></i> <strong>' + escapeHtml(tool) + "</strong>" +
+            '<span class="pai-tool-detail">' + escapeHtml(label) + "...</span>"
+        );
+        $msg.append($bubble);
+        $messages.append($msg);
+        scrollToBottom();
+    }
+
+    function scrollToBottom() {
+        $messages[0].scrollTop = $messages[0].scrollHeight;
+    }
+
+    // ── Send / Stream ───────────────────────────────────────────
+    function sendMessage() {
+        var text = $textarea.val().trim();
+        if (!text || streaming) return;
+
+        // Add to UI and conversation
+        addMessageToUI("user", text);
+        conversation.push({ role: "user", content: text });
+        $textarea.val("").css("height", "auto");
+
+        // Gather context
+        var flowContext = includeContext ? gatherFlowContext() : null;
+
+        // UI state
+        streaming = true;
+        $sendBtn.hide();
+        $(".pai-stop-btn").show();
+        $statusDot.removeClass("pai-status-idle pai-status-error").addClass("pai-status-streaming");
+
+        // Create assistant message bubble (empty, will be filled by stream)
+        var $bubble = addMessageToUI("assistant", "");
+        var fullText = "";
+
+        // Abort controller
+        abortController = new AbortController();
+
+        fetch("paautin-ai/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                messages: conversation,
+                mode: currentMode,
+                flowContext: flowContext,
+            }),
+            signal: abortController.signal,
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error("HTTP " + response.status);
+                }
+                var reader = response.body.getReader();
+                var decoder = new TextDecoder();
+                var buffer = "";
+
+                function read() {
+                    return reader.read().then(function (result) {
+                        if (result.done) {
+                            finishStream(fullText);
+                            return;
+                        }
+
+                        buffer += decoder.decode(result.value, { stream: true });
+                        var lines = buffer.split("\n");
+                        buffer = lines.pop();
+
+                        lines.forEach(function (line) {
+                            if (!line.startsWith("data: ")) return;
+                            var data = line.slice(6).trim();
+                            if (data === "[DONE]") return;
+
+                            try {
+                                var evt = JSON.parse(data);
+
+                                if (evt.type === "text") {
+                                    fullText += evt.content;
+                                    $bubble.html(renderMarkdown(fullText));
+                                    scrollToBottom();
+                                } else if (evt.type === "result" && typeof evt.content === "string") {
+                                    fullText = evt.content;
+                                    $bubble.html(renderMarkdown(fullText));
+                                    scrollToBottom();
+                                } else if (evt.type === "tool_use") {
+                                    addToolUseToUI(evt.content.tool, evt.content.input);
+                                } else if (evt.type === "error") {
+                                    $bubble.html(
+                                        '<span class="pai-error"><i class="fa fa-exclamation-triangle"></i> ' +
+                                        escapeHtml(evt.content) +
+                                        "</span>"
+                                    );
+                                    scrollToBottom();
+                                }
+                            } catch (_e) { /* skip */ }
+                        });
+
+                        return read();
+                    });
+                }
+
+                return read();
+            })
+            .catch(function (err) {
+                if (err.name === "AbortError") {
+                    $bubble.html($bubble.html() + '<br><em class="pai-stopped">[Detenido]</em>');
+                } else {
+                    $bubble.html(
+                        '<span class="pai-error"><i class="fa fa-exclamation-triangle"></i> ' +
+                        escapeHtml(err.message) +
+                        "</span>"
+                    );
+                }
+                finishStream(fullText);
+            });
+    }
+
+    function finishStream(fullText) {
+        streaming = false;
+        abortController = null;
+        $sendBtn.show();
+        $(".pai-stop-btn").hide();
+        $statusDot.removeClass("pai-status-streaming").addClass("pai-status-idle");
+
+        if (fullText) {
+            conversation.push({ role: "assistant", content: fullText });
+        }
+
+        $textarea.focus();
+    }
+
+    // ── Load config from server ─────────────────────────────────
+    function loadConfig() {
+        $.getJSON("paautin-ai/config", function (cfg) {
+            if (cfg.mode) {
+                currentMode = cfg.mode;
+                $modeSelect.val(currentMode);
+            }
+            if (cfg.hasApiKey) {
+                $statusDot.attr("title", "Configurado");
+            } else {
+                $statusDot.attr("title", "API Key no configurada");
+                $statusDot.addClass("pai-status-error");
+            }
+        });
+    }
+
+    // ── Register Plugin ─────────────────────────────────────────
+    RED.plugins.registerPlugin("paautin-ai-sidebar", {
+        type: "paautin-ai",
+        onadd: function () {
+            var ui = buildUI();
+
+            RED.sidebar.addTab({
+                id: "paautin-ai",
+                label: "AI",
+                name: "Paautin AI Assistant",
+                iconClass: "fa fa-comments",
+                content: ui.content[0],
+                toolbar: ui.toolbar[0],
+                enableOnEdit: true,
+                action: "core:show-paautin-ai-tab",
+            });
+
+            RED.actions.add("core:show-paautin-ai-tab", function () {
+                RED.sidebar.show("paautin-ai");
+            });
+
+            // Load config once editor is ready
+            RED.events.on("runtime-state", function () {
+                loadConfig();
+            });
+        },
+    });
+})();
+</script>
+
+<!-- ── Styles ─────────────────────────────────────────────────── -->
+<style>
+/* Container */
+.pai-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px;
+    background: #f7f7f7;
+}
+
+/* Toolbar */
+.pai-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    background: #eee;
+    border-bottom: 1px solid #ddd;
+    flex-shrink: 0;
+}
+
+.pai-mode-select {
+    flex: 1;
+    font-size: 11px;
+    padding: 3px 4px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background: #fff;
+}
+
+.pai-toolbar-btn {
+    background: none;
+    border: 1px solid transparent;
+    cursor: pointer;
+    padding: 3px 6px;
+    border-radius: 3px;
+    color: #666;
+    font-size: 12px;
+}
+.pai-toolbar-btn:hover {
+    background: #ddd;
+    border-color: #ccc;
+}
+
+.pai-context-active {
+    color: #2196f3 !important;
+    border-color: #2196f3 !important;
+    background: #e3f2fd !important;
+}
+
+.pai-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+.pai-status-idle { background: #4caf50; }
+.pai-status-streaming { background: #ff9800; animation: pai-pulse 1s infinite; }
+.pai-status-error { background: #f44336; }
+
+@keyframes pai-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* Messages */
+.pai-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.pai-msg {
+    display: flex;
+    max-width: 100%;
+}
+
+.pai-msg-user {
+    justify-content: flex-end;
+}
+
+.pai-msg-assistant, .pai-msg-tool {
+    justify-content: flex-start;
+}
+
+.pai-bubble {
+    padding: 8px 12px;
+    border-radius: 12px;
+    max-width: 92%;
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+.pai-bubble-user {
+    background: #2196f3;
+    color: #fff;
+    border-bottom-right-radius: 4px;
+}
+
+.pai-bubble-assistant {
+    background: #fff;
+    color: #333;
+    border: 1px solid #e0e0e0;
+    border-bottom-left-radius: 4px;
+}
+
+.pai-bubble-tool {
+    background: #fff3e0;
+    color: #e65100;
+    border: 1px solid #ffe0b2;
+    border-radius: 8px;
+    font-size: 11px;
+    padding: 5px 10px;
+}
+
+.pai-tool-detail {
+    margin-left: 6px;
+    color: #999;
+    font-size: 10px;
+}
+
+/* Code blocks */
+.pai-code-block {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 8px 10px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: "Menlo", "Monaco", "Courier New", monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    margin: 6px 0;
+    white-space: pre;
+}
+
+.pai-inline-code {
+    background: #f0f0f0;
+    color: #c7254e;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: "Menlo", "Monaco", "Courier New", monospace;
+    font-size: 11px;
+}
+
+.pai-bubble-user .pai-inline-code {
+    background: rgba(255,255,255,0.2);
+    color: #fff;
+}
+
+/* Error */
+.pai-error {
+    color: #d32f2f;
+}
+
+.pai-stopped {
+    color: #999;
+    font-size: 11px;
+}
+
+/* Input area */
+.pai-input-area {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    padding: 8px;
+    border-top: 1px solid #ddd;
+    background: #fff;
+    flex-shrink: 0;
+}
+
+.pai-textarea {
+    flex: 1;
+    resize: none;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.4;
+    max-height: 120px;
+    outline: none;
+}
+
+.pai-textarea:focus {
+    border-color: #2196f3;
+    box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.15);
+}
+
+.pai-send-btn, .pai-stop-btn {
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 14px;
+}
+
+.pai-send-btn {
+    background: #2196f3;
+    color: #fff;
+}
+.pai-send-btn:hover {
+    background: #1976d2;
+}
+
+.pai-stop-btn {
+    background: #f44336;
+    color: #fff;
+}
+.pai-stop-btn:hover {
+    background: #d32f2f;
+}
+
+/* Scrollbar */
+.pai-messages::-webkit-scrollbar {
+    width: 5px;
+}
+.pai-messages::-webkit-scrollbar-track {
+    background: transparent;
+}
+.pai-messages::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 3px;
+}
+</style>

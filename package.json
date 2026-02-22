@@ -1,0 +1,32 @@
+{
+  "name": "node-red-plugin-paautin-ai",
+  "version": "0.1.0",
+  "description": "AI Assistant sidebar for Node-RED powered by Claude (API directa, Claude Code local, o servidor remoto)",
+  "keywords": [
+    "node-red",
+    "claude",
+    "anthropic",
+    "ai",
+    "assistant",
+    "paautin",
+    "sidebar"
+  ],
+  "node-red": {
+    "version": ">=3.0.0",
+    "nodes": {
+      "paautin-ai-config": "paautin-ai-config.js"
+    },
+    "plugins": {
+      "paautin-ai-sidebar": "paautin-ai-sidebar.html"
+    }
+  },
+  "author": "HainTech",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
