@@ -197,8 +197,12 @@
         return result;
     }
 
-    // ── Logo (base64 embedded) ─────────────────────────────────
-    var HAINTECH_LOGO = "data:image/png;base64,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";
+    // ── Version & Logo ──────────────────────────────────────────
+    var PLUGIN_VERSION = "0.2.0";
+    var HAINTECH_LOGO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" class="pai-logo">' +
+        '<rect width="32" height="32" rx="6" fill="#1a73e8"/>' +
+        '<text x="16" y="22" text-anchor="middle" font-family="Arial,sans-serif" font-weight="bold" font-size="16" fill="#fff">E</text>' +
+        '</svg>';
 
     // ── UI Construction ──────────────────────────────────────────
     function buildUI() {
@@ -207,8 +211,8 @@
         // ─ Header with logo ─
         var $header = $("<div>", { class: "pai-header" });
         $header.html(
-            '<img src="' + HAINTECH_LOGO + '" class="pai-logo" alt="HainTech">' +
-            '<span class="pai-header-title">Paautin AI</span>' +
+            HAINTECH_LOGO_SVG +
+            '<span class="pai-header-title">Eheken v' + PLUGIN_VERSION + '</span>' +
             '<span class="pai-header-by">by HainTech</span>'
         );
 
@@ -314,7 +318,7 @@
         });
 
         updateStatusDot();
-        return { content: $content, toolbar: $toolbar };
+        return { content: $content };
     }
 
     // ── Status indicator ─────────────────────────────────────────
@@ -381,6 +385,7 @@
         var flowContext = includeContext ? gatherFlowContext() : null;
 
         streaming = true;
+        abortController = new AbortController();
         $sendBtn.hide();
         $stopBtn.show();
         $statusDot.removeClass("pai-status-idle pai-status-error").addClass("pai-status-streaming");
@@ -661,11 +666,10 @@
 
             RED.sidebar.addTab({
                 id: "paautin-ai",
-                label: "hAIntech",
-                name: "hAIntech - Paautin AI Assistant",
+                label: "Haintech AI",
+                name: "Haintech AI - Eheken Assistant",
                 iconClass: "fa fa-comments",
                 content: ui.content[0],
-                toolbar: ui.toolbar[0],
                 enableOnEdit: true,
                 action: "core:show-paautin-ai-tab",
             });
@@ -681,7 +685,8 @@
 <!-- ── Styles ──────────────────────────────────────────────────── -->
 <style>
 .pai-container {
-    display: flex; flex-direction: column; height: 100%; max-height: 100%; overflow: hidden;
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    display: flex; flex-direction: column; overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     font-size: 13px; background: #f7f7f7;
 }
