@@ -119,25 +119,45 @@
     }
 
     // ── Gather flow context from editor ──────────────────────────
+    function nodeToObj(n) {
+        var obj = { id: n.id, type: n.type, name: n.name || "", x: Math.round(n.x), y: Math.round(n.y), wires: n.wires };
+        if (n.url) obj.url = n.url;
+        if (n.method) obj.method = n.method;
+        if (n.topic) obj.topic = n.topic;
+        if (n.func) obj.func = n.func.length > 200 ? n.func.substring(0, 200) + "..." : n.func;
+        return obj;
+    }
+
     function gatherFlowContext() {
         var tabId = RED.workspaces.active();
         if (!tabId) return null;
 
+        // Check for selected nodes first
+        var selection = RED.view.selection();
+        var selectedNodes = (selection && selection.nodes) ? selection.nodes : [];
+
+        if (selectedNodes.length > 0) {
+            var nodes = selectedNodes.map(nodeToObj);
+            var tab = RED.nodes.workspace(tabId);
+            return {
+                tabId: tabId,
+                tabLabel: tab ? tab.label : tabId,
+                nodeCount: nodes.length,
+                selectionOnly: true,
+                nodes: nodes
+            };
+        }
+
+        // No selection — send all nodes on active tab
         var nodes = [];
         RED.nodes.eachNode(function (n) {
             if (n.z === tabId) {
-                var obj = { id: n.id, type: n.type, name: n.name || "", x: Math.round(n.x), y: Math.round(n.y), wires: n.wires };
-                // Include key properties per node type (compact)
-                if (n.url) obj.url = n.url;
-                if (n.method) obj.method = n.method;
-                if (n.topic) obj.topic = n.topic;
-                if (n.func) obj.func = n.func.length > 200 ? n.func.substring(0, 200) + "..." : n.func;
-                nodes.push(obj);
+                nodes.push(nodeToObj(n));
             }
         });
 
         var tab = RED.nodes.workspace(tabId);
-        return { tabId: tabId, tabLabel: tab ? tab.label : tabId, nodeCount: nodes.length, nodes: nodes };
+        return { tabId: tabId, tabLabel: tab ? tab.label : tabId, nodeCount: nodes.length, selectionOnly: false, nodes: nodes };
     }
 
     // ── Canvas Actions ───────────────────────────────────────────
@@ -394,8 +414,12 @@
         $stopBtn.show();
         $statusDot.removeClass("pai-status-idle pai-status-error").addClass("pai-status-streaming");
 
-        // Show thinking indicator
-        var $thinking = $('<div class="pai-msg pai-msg-assistant"><div class="pai-bubble pai-bubble-assistant pai-thinking"><span class="pai-thinking-dots"><span></span><span></span><span></span></span> Pensando...</div></div>');
+        // Show thinking indicator with selection info
+        var thinkingLabel = "Pensando...";
+        if (flowContext && flowContext.selectionOnly) {
+            thinkingLabel = "Analizando " + flowContext.nodeCount + " nodo" + (flowContext.nodeCount > 1 ? "s" : "") + " seleccionado" + (flowContext.nodeCount > 1 ? "s" : "") + "...";
+        }
+        var $thinking = $('<div class="pai-msg pai-msg-assistant"><div class="pai-bubble pai-bubble-assistant pai-thinking"><span class="pai-thinking-dots"><span></span><span></span><span></span></span> ' + thinkingLabel + '</div></div>');
         $messages.append($thinking);
         scrollToBottom();
 
@@ -433,7 +457,10 @@
             system += "\nUse this as the 'z' value when creating nodes.";
         }
         if (flowContext && flowContext.nodes.length > 0) {
-            system += "\n\nCurrent nodes on this tab (" + flowContext.nodeCount + " nodes):\n```json\n" +
+            var ctxLabel = flowContext.selectionOnly
+                ? "SELECTED nodes (" + flowContext.nodeCount + " nodes selected by the user — focus on these)"
+                : "All nodes on this tab (" + flowContext.nodeCount + " nodes)";
+            system += "\n\n" + ctxLabel + ":\n```json\n" +
                 JSON.stringify(flowContext.nodes) + "\n```";
         }
 
