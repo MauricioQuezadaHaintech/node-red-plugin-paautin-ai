@@ -605,7 +605,7 @@
         return fetch(settings.companionUrl + "/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: text, flowContext: flowContext }),
+            body: JSON.stringify({ prompt: text, flowContext: flowContext, history: conversation.slice(0, -1) }),
             signal: abortController.signal,
         }).then(function (response) {
             if (!response.ok) {

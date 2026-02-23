@@ -121,6 +121,7 @@ async function handleChat(req, res) {
 
     var prompt = body.prompt || "";
     var flowContext = body.flowContext || null;
+    var history = body.history || [];
 
     if (!prompt) {
         res.writeHead(400);
@@ -128,15 +129,33 @@ async function handleChat(req, res) {
         return;
     }
 
+    // Build full prompt with conversation history
+    var fullPrompt = "";
+
     // Prepend flow context if provided
     if (flowContext && flowContext.nodes && flowContext.nodes.length > 0) {
-        prompt =
+        fullPrompt +=
             "Context — active Node-RED flow (tab: " +
             (flowContext.tabLabel || flowContext.tabId) +
             ", " + flowContext.nodeCount + " nodes):\n```json\n" +
             JSON.stringify(flowContext.nodes) +
-            "\n```\n\n" + prompt;
+            "\n```\n\n";
     }
+
+    // Prepend conversation history
+    if (history.length > 0) {
+        fullPrompt += "Conversation history:\n";
+        history.forEach(function (msg) {
+            var role = msg.role === "user" ? "User" : "Assistant";
+            var content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+            // Truncate long messages to save tokens
+            if (content.length > 500) content = content.substring(0, 500) + "...";
+            fullPrompt += role + ": " + content + "\n";
+        });
+        fullPrompt += "\nCurrent message:\n";
+    }
+
+    fullPrompt += prompt;
 
     // SSE headers
     res.writeHead(200, {
@@ -150,7 +169,7 @@ async function handleChat(req, res) {
     var ts = Date.now();
     var tmpPrompt = path.join(os.tmpdir(), "claude-prompt-" + ts + ".txt");
     var tmpOut = path.join(os.tmpdir(), "claude-out-" + ts + ".jsonl");
-    fs.writeFileSync(tmpPrompt, prompt);
+    fs.writeFileSync(tmpPrompt, fullPrompt);
 
     // Build minimal clean env
     var childEnv = {
